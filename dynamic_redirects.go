@@ -16,7 +16,7 @@ type Config struct {
 type Redirect struct {
 	SourceURL           string            `json:"sourceURL,omitempty"`
 	StatusCode          int               `json:"statusCode,omitempty"`
-	PreserveQueryString string            `json:"preserveQueryString,omitempty"`
+	PreserveQueryString bool              `json:"preserveQueryString,omitempty"`
 	AuthenticatedCookie string            `json:"authenticatedCookie,omitempty"`
 	AuthenticatedTarget string            `json:"authenticatedTarget,omitempty"`
 	LocaleCookie        string            `json:"localeCookie,omitempty"`
@@ -27,12 +27,12 @@ type Redirect struct {
 type Target struct {
 	URL                 string
 	StatusCode          int
-	PreserveQueryString string
+	PreserveQueryString bool
 }
 
 type RuntimeRedirect struct {
 	StatusCode          int
-	PreserveQueryString string
+	PreserveQueryString bool
 	AuthenticatedCookie string
 	AuthenticatedTarget string
 	LocaleCookie        string
@@ -113,7 +113,7 @@ func (dynamicRedirects *DynamicRedirects) ServeHTTP(rw http.ResponseWriter, req 
 func redirect(rw http.ResponseWriter, req *http.Request, target Target) {
 	targetURL := target.URL
 
-	if strings.EqualFold(target.PreserveQueryString, "enabled") && req.URL.RawQuery != "" {
+	if target.PreserveQueryString && req.URL.RawQuery != "" {
 		separator := "?"
 		if strings.Contains(targetURL, "?") {
 			separator = "&"
@@ -203,14 +203,6 @@ func validateRedirect(sourceURL string, redirect *Redirect) error {
 
 	if !isValidRedirectStatusCode(redirect.StatusCode) {
 		return fmt.Errorf("invalid statusCode %d for %s", redirect.StatusCode, sourceURL)
-	}
-
-	if redirect.PreserveQueryString == "" {
-		redirect.PreserveQueryString = "enabled"
-	}
-
-	if !isValidEnabledDisabledValue(redirect.PreserveQueryString) {
-		return fmt.Errorf("invalid preserveQueryString %q for %s", redirect.PreserveQueryString, sourceURL)
 	}
 
 	if redirect.DefaultTarget == "" {
@@ -317,8 +309,4 @@ func isValidRedirectStatusCode(statusCode int) bool {
 	default:
 		return false
 	}
-}
-
-func isValidEnabledDisabledValue(value string) bool {
-	return value == "" || strings.EqualFold(value, "enabled") || strings.EqualFold(value, "disabled")
 }

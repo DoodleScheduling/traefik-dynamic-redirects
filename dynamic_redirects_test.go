@@ -49,7 +49,7 @@ func TestRedirectWithLocaleCookieIsCaseInsensitive(t *testing.T) {
 		{
 			SourceURL:           "https://example.com/",
 			StatusCode:          http.StatusFound,
-			PreserveQueryString: "enabled",
+			PreserveQueryString: true,
 			LocaleCookie:        "locale",
 			DefaultTarget:       "https://example.com/en/",
 			LocaleTargets: map[string]string{
@@ -94,7 +94,7 @@ func TestRedirectUsesFirstSupportedAcceptLanguage(t *testing.T) {
 		{
 			SourceURL:           "https://example.com/",
 			StatusCode:          http.StatusFound,
-			PreserveQueryString: "enabled",
+			PreserveQueryString: true,
 			DefaultTarget:       "https://example.com/en/",
 			LocaleTargets: map[string]string{
 				"de": "https://example.com/de/",
@@ -190,7 +190,7 @@ func TestRedirectPreservesQueryString(t *testing.T) {
 
 func TestRedirectDoesNotPreserveQueryStringWhenDisabled(t *testing.T) {
 	redirect := testRedirect()
-	redirect.PreserveQueryString = "disabled"
+	redirect.PreserveQueryString = false
 
 	handler := newTestHandler(t, []Redirect{
 		redirect,
@@ -214,7 +214,7 @@ func TestRedirectAppendsQueryStringWithAmpersandWhenTargetAlreadyHasQueryString(
 		{
 			SourceURL:           "https://example.com/",
 			StatusCode:          http.StatusFound,
-			PreserveQueryString: "enabled",
+			PreserveQueryString: true,
 			AuthenticatedCookie: "Authentication",
 			AuthenticatedTarget: "https://example.com/home/?source=plugin",
 			DefaultTarget:       "https://example.com/en/",
@@ -313,40 +313,6 @@ func TestDefaultStatusCodeIsFound(t *testing.T) {
 	assertLocation(t, rec, "https://example.com/en/")
 }
 
-func TestDefaultPreserveQueryStringIsEnabled(t *testing.T) {
-	redirect := testRedirect()
-	redirect.PreserveQueryString = ""
-
-	handler := newTestHandler(t, []Redirect{
-		redirect,
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/?utm_source=google", nil)
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	assertStatus(t, rec, http.StatusFound)
-	assertLocation(t, rec, "https://example.com/en/?utm_source=google")
-}
-
-func TestPreserveQueryStringIsCaseInsensitive(t *testing.T) {
-	redirect := testRedirect()
-	redirect.PreserveQueryString = "ENABLED"
-
-	handler := newTestHandler(t, []Redirect{
-		redirect,
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "https://example.com/?utm_source=google", nil)
-	rec := httptest.NewRecorder()
-
-	handler.ServeHTTP(rec, req)
-
-	assertStatus(t, rec, http.StatusFound)
-	assertLocation(t, rec, "https://example.com/en/?utm_source=google")
-}
-
 func TestNewReturnsErrorForInvalidStatusCode(t *testing.T) {
 	redirect := testRedirect()
 	redirect.StatusCode = http.StatusOK
@@ -436,19 +402,6 @@ func TestNewReturnsErrorWhenDefaultTargetIsNotAbsolute(t *testing.T) {
 	}, "dynamic-redirects")
 
 	assertErrorContains(t, err, "invalid defaultTarget")
-}
-
-func TestNewReturnsErrorForInvalidPreserveQueryString(t *testing.T) {
-	redirect := testRedirect()
-	redirect.PreserveQueryString = "true"
-
-	_, err := New(context.Background(), nextHandler(), &Config{
-		Redirects: []Redirect{
-			redirect,
-		},
-	}, "dynamic-redirects")
-
-	assertErrorContains(t, err, "invalid preserveQueryString")
 }
 
 func TestNewReturnsErrorWhenAuthenticatedTargetHasNoCookie(t *testing.T) {
@@ -586,7 +539,7 @@ func testRedirect() Redirect {
 	return Redirect{
 		SourceURL:           "https://example.com/",
 		StatusCode:          http.StatusFound,
-		PreserveQueryString: "enabled",
+		PreserveQueryString: true,
 		AuthenticatedCookie: "Authentication",
 		AuthenticatedTarget: "https://example.com/home/",
 		LocaleCookie:        "locale",
