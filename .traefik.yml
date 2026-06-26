@@ -1,0 +1,35 @@
+displayName: Dynamic Redirects
+type: middleware
+iconPath: .assets/icon.png
+
+import: github.com/DoodleScheduling/traefik-dynamic-redirects
+
+summary: Middleware for dynamic redirects based on cookies and Accept-Language.
+
+testData:
+  redirects:
+    - sourceURL: https://example.com/
+      statusCode: 302
+      preserveQueryString: enabled
+      authenticatedCookie: Authentication
+      authenticatedTarget: https://example.com/home/
+      localeCookie: locale
+      defaultTarget: https://example.com/en/
+      localeTargets:
+        de: https://example.com/de/
+        it: https://example.com/it/
+        fr: https://example.com/fr/
+        es: https://example.com/es/
+
+    - sourceURL: https://www.example.com/
+      statusCode: 302
+      preserveQueryString: enabled
+      authenticatedCookie: Authentication
+      authenticatedTarget: https://example.com/home/
+      localeCookie: locale
+      defaultTarget: https://example.com/en/
+      localeTargets:
+        de: https://example.com/de/
+        it: https://example.com/it/
+        fr: https://example.com/fr/
+        es: https://example.com/es/
