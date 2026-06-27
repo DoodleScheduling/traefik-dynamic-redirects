@@ -10,7 +10,7 @@ testData:
   redirects:
     - sourceURL: https://example.com/
       statusCode: 302
-      preserveQueryString: enabled
+      preserveQueryString: true
       authenticatedCookie: Authentication
       authenticatedTarget: https://example.com/home/
       localeCookie: locale
@@ -23,7 +23,7 @@ testData:
 
     - sourceURL: https://www.example.com/
       statusCode: 302
-      preserveQueryString: enabled
+      preserveQueryString: true
       authenticatedCookie: Authentication
       authenticatedTarget: https://example.com/home/
       localeCookie: locale
