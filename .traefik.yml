@@ -13,7 +13,7 @@ testData:
       es: https://example.com/es/
       fr: https://example.com/fr/
       it: https://example.com/it/
-    preserveQueryString: enabled
+    preserveQueryString: true
     sourceURL: https://example.com/
     statusCode: 302
   - authenticatedCookie: Authentication
@@ -25,7 +25,7 @@ testData:
       es: https://example.com/es/
       fr: https://example.com/fr/
       it: https://example.com/it/
-    preserveQueryString: enabled
+    preserveQueryString: true
     sourceURL: https://www.example.com/
     statusCode: 302
 type: middleware
