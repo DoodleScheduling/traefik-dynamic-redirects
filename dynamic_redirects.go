@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strings"
 )
 
@@ -48,24 +47,23 @@ func CreateConfig() *Config {
 	}
 }
 
-type subpathRedirect struct {
-	host     string
-	path     string
-	redirect RuntimeRedirect
+type prefixRedirect struct {
+	sourcePath string
+	redirect   RuntimeRedirect
 }
 
 type DynamicRedirects struct {
-	next             http.Handler
-	name             string
-	redirects        map[string]RuntimeRedirect
-	subpathRedirects []subpathRedirect
+	next            http.Handler
+	name            string
+	redirects       map[string]RuntimeRedirect
+	prefixRedirects map[string]prefixRedirect
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	_ = ctx
 
 	redirects := make(map[string]RuntimeRedirect, len(config.Redirects))
-	var subpathRedirects []subpathRedirect
+	prefixRedirects := make(map[string]prefixRedirect)
 
 	for _, redirect := range config.Redirects {
 		if redirect.SourceURL == "" {
@@ -91,30 +89,24 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			LocaleTargets:       normalizeLocaleTargets(redirect.LocaleTargets),
 		}
 
+		key := buildKey(sourceHost, sourcePath)
+
 		if redirect.SubpathMatching {
-			subpathRedirects = append(subpathRedirects, subpathRedirect{
-				host:     sourceHost,
-				path:     strings.TrimSuffix(sourcePath, "/"),
-				redirect: runtimeRedirect,
-			})
+			prefixRedirects[key] = prefixRedirect{
+				sourcePath: sourcePath,
+				redirect:   runtimeRedirect,
+			}
 			continue
 		}
 
-		key := buildKey(sourceHost, sourcePath)
 		redirects[key] = runtimeRedirect
 	}
 
-	// Longest path first, so the most specific subpath match wins when more
-	// than one configured prefix could match the same request.
-	sort.Slice(subpathRedirects, func(i, j int) bool {
-		return len(subpathRedirects[i].path) > len(subpathRedirects[j].path)
-	})
-
 	return &DynamicRedirects{
-		next:             next,
-		name:             name,
-		redirects:        redirects,
-		subpathRedirects: subpathRedirects,
+		next:            next,
+		name:            name,
+		redirects:       redirects,
+		prefixRedirects: prefixRedirects,
 	}, nil
 }
 
@@ -134,37 +126,92 @@ func (dynamicRedirects *DynamicRedirects) ServeHTTP(rw http.ResponseWriter, req 
 		}
 	}
 
-	for _, sr := range dynamicRedirects.subpathRedirects {
-		if sr.host != host || !pathMatchesPrefix(path, sr.path) {
-			continue
-		}
-
-		if target, found := resolveRedirect(req, sr.redirect); found {
+	if pr, found := dynamicRedirects.findPrefixRedirect(host, path); found {
+		if target, found := resolveRedirect(req, pr); found {
 			redirect(rw, req, target)
 			return
 		}
-
-		break
 	}
 
 	dynamicRedirects.next.ServeHTTP(rw, req)
 }
 
-// pathMatchesPrefix reports whether path is prefixPath itself or a path
-// segment nested under it. prefixPath is expected to have no trailing slash
-// (the empty string represents the root "/", which matches every path).
-// Segment boundaries are enforced so a prefix like "/poll" matches "/poll"
-// and "/poll/123" but not "/pollution".
-func pathMatchesPrefix(path, prefixPath string) bool {
-	if prefixPath == "" {
+// findPrefixRedirect walks the request path upward one segment at a time --
+// /poll/123/details, then /poll/123/, then /poll/ -- doing a map lookup at
+// each candidate instead of scanning every configured subpath redirect. This
+// keeps the cost proportional to the path's depth, not to how many
+// subpathMatching entries are configured, and the first (deepest) match found
+// is always the most specific one, so no separate "longest prefix" sort is
+// needed. Mirrors the equivalent lookup in the sibling traefik-bulk-redirects
+// plugin.
+func (dynamicRedirects *DynamicRedirects) findPrefixRedirect(host, path string) (RuntimeRedirect, bool) {
+	currentPath := path
+
+	for {
+		if pr, found := dynamicRedirects.findPrefixCandidate(host, path, currentPath); found {
+			return pr, true
+		}
+
+		if currentPath == "/" {
+			break
+		}
+
+		trimmed := strings.TrimRight(currentPath, "/")
+		lastSlash := strings.LastIndex(trimmed, "/")
+		if lastSlash <= 0 {
+			currentPath = "/"
+			continue
+		}
+
+		currentPath = trimmed[:lastSlash+1]
+	}
+
+	return RuntimeRedirect{}, false
+}
+
+func (dynamicRedirects *DynamicRedirects) findPrefixCandidate(host, path, candidate string) (RuntimeRedirect, bool) {
+	if pr, found := dynamicRedirects.prefixRedirects[buildKey(host, candidate)]; found {
+		if isSubpathMatch(path, pr.sourcePath) {
+			return pr.redirect, true
+		}
+	}
+
+	if candidate == "/" {
+		return RuntimeRedirect{}, false
+	}
+
+	alternative := toggleTrailingSlash(candidate)
+
+	if pr, found := dynamicRedirects.prefixRedirects[buildKey(host, alternative)]; found {
+		if isSubpathMatch(path, pr.sourcePath) {
+			return pr.redirect, true
+		}
+	}
+
+	return RuntimeRedirect{}, false
+}
+
+func toggleTrailingSlash(path string) string {
+	if strings.HasSuffix(path, "/") {
+		return strings.TrimRight(path, "/")
+	}
+
+	return path + "/"
+}
+
+// isSubpathMatch reports whether path is sourcePath itself or a path segment
+// nested under it. Segment boundaries are enforced so a sourcePath like
+// "/poll" matches "/poll" and "/poll/123" but not "/pollution".
+func isSubpathMatch(path, sourcePath string) bool {
+	if path == sourcePath {
 		return true
 	}
 
-	if path == prefixPath {
-		return true
+	if strings.HasSuffix(sourcePath, "/") {
+		return strings.HasPrefix(path, sourcePath)
 	}
 
-	return strings.HasPrefix(path, prefixPath+"/")
+	return strings.HasPrefix(path, sourcePath+"/")
 }
 
 func redirect(rw http.ResponseWriter, req *http.Request, target Target) {
