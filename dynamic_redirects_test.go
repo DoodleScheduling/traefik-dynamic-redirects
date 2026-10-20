@@ -235,6 +235,190 @@ func TestRedirectAppendsQueryStringWithAmpersandWhenTargetAlreadyHasQueryString(
 	assertLocation(t, rec, "https://example.com/home/?source=plugin&utm_source=google")
 }
 
+func TestSubpathMatchingMatchesExactPath(t *testing.T) {
+	redirect := testRedirect()
+	redirect.SubpathMatching = true
+
+	handler := newTestHandler(t, []Redirect{redirect})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusFound)
+	assertLocation(t, rec, "https://example.com/en/")
+}
+
+func TestSubpathMatchingMatchesNestedPath(t *testing.T) {
+	redirect := testRedirect()
+	redirect.SourceURL = "https://example.com/poll"
+	redirect.SubpathMatching = true
+
+	handler := newTestHandler(t, []Redirect{redirect})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/poll/abc123", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusFound)
+	assertLocation(t, rec, "https://example.com/en/")
+}
+
+func TestSubpathMatchingMatchesNestedPathWithTrailingSlash(t *testing.T) {
+	redirect := testRedirect()
+	redirect.SourceURL = "https://example.com/poll"
+	redirect.SubpathMatching = true
+
+	handler := newTestHandler(t, []Redirect{redirect})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/poll/", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusFound)
+	assertLocation(t, rec, "https://example.com/en/")
+}
+
+func TestSubpathMatchingPreservesLocaleAndQueryString(t *testing.T) {
+	redirect := testRedirect()
+	redirect.SourceURL = "https://example.com/poll"
+	redirect.SubpathMatching = true
+
+	handler := newTestHandler(t, []Redirect{redirect})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/poll/abc123?ref=email", nil)
+	req.AddCookie(&http.Cookie{
+		Name:  "locale",
+		Value: "es",
+	})
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusFound)
+	assertLocation(t, rec, "https://example.com/es/?ref=email")
+}
+
+func TestSubpathMatchingDoesNotMatchUnrelatedPathWithSamePrefix(t *testing.T) {
+	redirect := testRedirect()
+	redirect.SourceURL = "https://example.com/poll"
+	redirect.SubpathMatching = true
+
+	handler := newTestHandler(t, []Redirect{redirect})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/pollution", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusTeapot)
+}
+
+func TestSubpathMatchingDoesNotMatchUnrelatedPathWithSamePrefixAndQuery(t *testing.T) {
+	redirect := testRedirect()
+	redirect.SourceURL = "https://example.com/poll"
+	redirect.SubpathMatching = true
+
+	handler := newTestHandler(t, []Redirect{redirect})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/pollutants/report", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusTeapot)
+}
+
+func TestSubpathMatchingDoesNotMatchDifferentHost(t *testing.T) {
+	redirect := testRedirect()
+	redirect.SourceURL = "https://example.com/poll"
+	redirect.SubpathMatching = true
+
+	handler := newTestHandler(t, []Redirect{redirect})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.org/poll/abc123", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusTeapot)
+}
+
+func TestExactMatchTakesPriorityOverSubpathMatch(t *testing.T) {
+	exactPoll := Redirect{
+		SourceURL:     "https://example.com/poll/vip",
+		StatusCode:    http.StatusFound,
+		DefaultTarget: "https://example.com/vip-landing/",
+	}
+
+	subpathPoll := Redirect{
+		SourceURL:       "https://example.com/poll",
+		StatusCode:      http.StatusFound,
+		SubpathMatching: true,
+		DefaultTarget:   "https://example.com/en/poll-archived/",
+	}
+
+	handler := newTestHandler(t, []Redirect{exactPoll, subpathPoll})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/poll/vip", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusFound)
+	assertLocation(t, rec, "https://example.com/vip-landing/")
+}
+
+func TestLongestSubpathMatchWins(t *testing.T) {
+	general := Redirect{
+		SourceURL:       "https://example.com/poll",
+		StatusCode:      http.StatusFound,
+		SubpathMatching: true,
+		DefaultTarget:   "https://example.com/en/poll-archived/",
+	}
+
+	specific := Redirect{
+		SourceURL:       "https://example.com/poll/legacy",
+		StatusCode:      http.StatusFound,
+		SubpathMatching: true,
+		DefaultTarget:   "https://example.com/en/legacy-poll-archived/",
+	}
+
+	// Order in config shouldn't matter -- the most specific (longest) prefix
+	// must win regardless of declaration order.
+	handler := newTestHandler(t, []Redirect{general, specific})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/poll/legacy/abc123", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusFound)
+	assertLocation(t, rec, "https://example.com/en/legacy-poll-archived/")
+}
+
+func TestSubpathMatchingOnRootMatchesAnyPath(t *testing.T) {
+	redirect := Redirect{
+		SourceURL:       "https://example.com/",
+		StatusCode:      http.StatusFound,
+		SubpathMatching: true,
+		DefaultTarget:   "https://example.com/en/",
+	}
+
+	handler := newTestHandler(t, []Redirect{redirect})
+
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/anything/nested", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	assertStatus(t, rec, http.StatusFound)
+	assertLocation(t, rec, "https://example.com/en/")
+}
+
 func TestRedirectOnlyMatchesConfiguredSourcePath(t *testing.T) {
 	handler := newTestHandler(t, []Redirect{
 		testRedirect(),

@@ -17,6 +17,7 @@ type Redirect struct {
 	SourceURL           string            `json:"sourceURL,omitempty"`
 	StatusCode          int               `json:"statusCode,omitempty"`
 	PreserveQueryString bool              `json:"preserveQueryString,omitempty"`
+	SubpathMatching     bool              `json:"subpathMatching,omitempty"`
 	AuthenticatedCookie string            `json:"authenticatedCookie,omitempty"`
 	AuthenticatedTarget string            `json:"authenticatedTarget,omitempty"`
 	LocaleCookie        string            `json:"localeCookie,omitempty"`
@@ -46,16 +47,23 @@ func CreateConfig() *Config {
 	}
 }
 
+type prefixRedirect struct {
+	sourcePath string
+	redirect   RuntimeRedirect
+}
+
 type DynamicRedirects struct {
-	next      http.Handler
-	name      string
-	redirects map[string]RuntimeRedirect
+	next            http.Handler
+	name            string
+	redirects       map[string]RuntimeRedirect
+	prefixRedirects map[string]prefixRedirect
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	_ = ctx
 
 	redirects := make(map[string]RuntimeRedirect, len(config.Redirects))
+	prefixRedirects := make(map[string]prefixRedirect)
 
 	for _, redirect := range config.Redirects {
 		if redirect.SourceURL == "" {
@@ -71,9 +79,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			return nil, err
 		}
 
-		key := buildKey(sourceHost, sourcePath)
-
-		redirects[key] = RuntimeRedirect{
+		runtimeRedirect := RuntimeRedirect{
 			StatusCode:          redirect.StatusCode,
 			PreserveQueryString: redirect.PreserveQueryString,
 			AuthenticatedCookie: redirect.AuthenticatedCookie,
@@ -82,12 +88,25 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			DefaultTarget:       redirect.DefaultTarget,
 			LocaleTargets:       normalizeLocaleTargets(redirect.LocaleTargets),
 		}
+
+		key := buildKey(sourceHost, sourcePath)
+
+		if redirect.SubpathMatching {
+			prefixRedirects[key] = prefixRedirect{
+				sourcePath: sourcePath,
+				redirect:   runtimeRedirect,
+			}
+			continue
+		}
+
+		redirects[key] = runtimeRedirect
 	}
 
 	return &DynamicRedirects{
-		next:      next,
-		name:      name,
-		redirects: redirects,
+		next:            next,
+		name:            name,
+		redirects:       redirects,
+		prefixRedirects: prefixRedirects,
 	}, nil
 }
 
@@ -107,7 +126,92 @@ func (dynamicRedirects *DynamicRedirects) ServeHTTP(rw http.ResponseWriter, req 
 		}
 	}
 
+	if pr, found := dynamicRedirects.findPrefixRedirect(host, path); found {
+		if target, found := resolveRedirect(req, pr); found {
+			redirect(rw, req, target)
+			return
+		}
+	}
+
 	dynamicRedirects.next.ServeHTTP(rw, req)
+}
+
+// findPrefixRedirect walks the request path upward one segment at a time --
+// /poll/123/details, then /poll/123/, then /poll/ -- doing a map lookup at
+// each candidate instead of scanning every configured subpath redirect. This
+// keeps the cost proportional to the path's depth, not to how many
+// subpathMatching entries are configured, and the first (deepest) match found
+// is always the most specific one, so no separate "longest prefix" sort is
+// needed. Mirrors the equivalent lookup in the sibling traefik-bulk-redirects
+// plugin.
+func (dynamicRedirects *DynamicRedirects) findPrefixRedirect(host, path string) (RuntimeRedirect, bool) {
+	currentPath := path
+
+	for {
+		if pr, found := dynamicRedirects.findPrefixCandidate(host, path, currentPath); found {
+			return pr, true
+		}
+
+		if currentPath == "/" {
+			break
+		}
+
+		trimmed := strings.TrimRight(currentPath, "/")
+		lastSlash := strings.LastIndex(trimmed, "/")
+		if lastSlash <= 0 {
+			currentPath = "/"
+			continue
+		}
+
+		currentPath = trimmed[:lastSlash+1]
+	}
+
+	return RuntimeRedirect{}, false
+}
+
+func (dynamicRedirects *DynamicRedirects) findPrefixCandidate(host, path, candidate string) (RuntimeRedirect, bool) {
+	if pr, found := dynamicRedirects.prefixRedirects[buildKey(host, candidate)]; found {
+		if isSubpathMatch(path, pr.sourcePath) {
+			return pr.redirect, true
+		}
+	}
+
+	if candidate == "/" {
+		return RuntimeRedirect{}, false
+	}
+
+	alternative := toggleTrailingSlash(candidate)
+
+	if pr, found := dynamicRedirects.prefixRedirects[buildKey(host, alternative)]; found {
+		if isSubpathMatch(path, pr.sourcePath) {
+			return pr.redirect, true
+		}
+	}
+
+	return RuntimeRedirect{}, false
+}
+
+func toggleTrailingSlash(path string) string {
+	if strings.HasSuffix(path, "/") {
+		return strings.TrimRight(path, "/")
+	}
+
+	return path + "/"
+}
+
+// isSubpathMatch reports whether path is sourcePath itself or a path segment
+// nested under it. Segment boundaries are enforced so a sourcePath like
+// "/poll" matches "/poll" and "/poll/123" but not "/pollution".
+func isSubpathMatch(path, sourcePath string) bool {
+	if path == sourcePath {
+		return true
+	}
+
+	if strings.HasSuffix(sourcePath, "/") {
+		return strings.HasPrefix(path, sourcePath)
+	}
+
+	return strings.HasPrefix(path, sourcePath+"/")
 }
 
 func redirect(rw http.ResponseWriter, req *http.Request, target Target) {
