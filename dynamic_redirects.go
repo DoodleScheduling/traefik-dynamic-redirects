@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -17,6 +18,7 @@ type Redirect struct {
 	SourceURL           string            `json:"sourceURL,omitempty"`
 	StatusCode          int               `json:"statusCode,omitempty"`
 	PreserveQueryString bool              `json:"preserveQueryString,omitempty"`
+	SubpathMatching     bool              `json:"subpathMatching,omitempty"`
 	AuthenticatedCookie string            `json:"authenticatedCookie,omitempty"`
 	AuthenticatedTarget string            `json:"authenticatedTarget,omitempty"`
 	LocaleCookie        string            `json:"localeCookie,omitempty"`
@@ -46,16 +48,24 @@ func CreateConfig() *Config {
 	}
 }
 
+type subpathRedirect struct {
+	host     string
+	path     string
+	redirect RuntimeRedirect
+}
+
 type DynamicRedirects struct {
-	next      http.Handler
-	name      string
-	redirects map[string]RuntimeRedirect
+	next             http.Handler
+	name             string
+	redirects        map[string]RuntimeRedirect
+	subpathRedirects []subpathRedirect
 }
 
 func New(ctx context.Context, next http.Handler, config *Config, name string) (http.Handler, error) {
 	_ = ctx
 
 	redirects := make(map[string]RuntimeRedirect, len(config.Redirects))
+	var subpathRedirects []subpathRedirect
 
 	for _, redirect := range config.Redirects {
 		if redirect.SourceURL == "" {
@@ -71,9 +81,7 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			return nil, err
 		}
 
-		key := buildKey(sourceHost, sourcePath)
-
-		redirects[key] = RuntimeRedirect{
+		runtimeRedirect := RuntimeRedirect{
 			StatusCode:          redirect.StatusCode,
 			PreserveQueryString: redirect.PreserveQueryString,
 			AuthenticatedCookie: redirect.AuthenticatedCookie,
@@ -82,12 +90,31 @@ func New(ctx context.Context, next http.Handler, config *Config, name string) (h
 			DefaultTarget:       redirect.DefaultTarget,
 			LocaleTargets:       normalizeLocaleTargets(redirect.LocaleTargets),
 		}
+
+		if redirect.SubpathMatching {
+			subpathRedirects = append(subpathRedirects, subpathRedirect{
+				host:     sourceHost,
+				path:     strings.TrimSuffix(sourcePath, "/"),
+				redirect: runtimeRedirect,
+			})
+			continue
+		}
+
+		key := buildKey(sourceHost, sourcePath)
+		redirects[key] = runtimeRedirect
 	}
 
+	// Longest path first, so the most specific subpath match wins when more
+	// than one configured prefix could match the same request.
+	sort.Slice(subpathRedirects, func(i, j int) bool {
+		return len(subpathRedirects[i].path) > len(subpathRedirects[j].path)
+	})
+
 	return &DynamicRedirects{
-		next:      next,
-		name:      name,
-		redirects: redirects,
+		next:             next,
+		name:             name,
+		redirects:        redirects,
+		subpathRedirects: subpathRedirects,
 	}, nil
 }
 
@@ -107,7 +134,37 @@ func (dynamicRedirects *DynamicRedirects) ServeHTTP(rw http.ResponseWriter, req 
 		}
 	}
 
+	for _, sr := range dynamicRedirects.subpathRedirects {
+		if sr.host != host || !pathMatchesPrefix(path, sr.path) {
+			continue
+		}
+
+		if target, found := resolveRedirect(req, sr.redirect); found {
+			redirect(rw, req, target)
+			return
+		}
+
+		break
+	}
+
 	dynamicRedirects.next.ServeHTTP(rw, req)
+}
+
+// pathMatchesPrefix reports whether path is prefixPath itself or a path
+// segment nested under it. prefixPath is expected to have no trailing slash
+// (the empty string represents the root "/", which matches every path).
+// Segment boundaries are enforced so a prefix like "/poll" matches "/poll"
+// and "/poll/123" but not "/pollution".
+func pathMatchesPrefix(path, prefixPath string) bool {
+	if prefixPath == "" {
+		return true
+	}
+
+	if path == prefixPath {
+		return true
+	}
+
+	return strings.HasPrefix(path, prefixPath+"/")
 }
 
 func redirect(rw http.ResponseWriter, req *http.Request, target Target) {

@@ -33,6 +33,7 @@ If none of the configured redirects match the request URL, the request is passed
 | `sourceURL` | Absolute source URL to match. Query strings and fragments are not supported in `sourceURL`. |
 | `statusCode` | Redirect status code: `301`, `302`, `303`, `307`, `308`. Defaults to `302` when omitted. |
 | `preserveQueryString` | Boolean. When `true`, appends the original request query string to the selected target URL. |
+| `subpathMatching` | Boolean. When `true`, the `sourceURL` path also matches any nested path under it (e.g. `/poll` matches `/poll`, `/poll/`, and `/poll/123`, but not `/pollution`). Defaults to `false` (exact path match only). An exact match always takes priority over a subpath match for the same host, and among overlapping subpath matches the longest configured path wins. |
 | `authenticatedCookie` | Cookie name used to detect authenticated users. |
 | `authenticatedTarget` | Absolute target URL used when `authenticatedCookie` exists and has a non-empty value. |
 | `localeCookie` | Cookie name used to select a localized redirect target. |
@@ -77,6 +78,19 @@ spec:
             es: https://example.com/es/
             fr: https://example.com/fr/
             it: https://example.com/it/
+
+        # subpathMatching: true also redirects /poll/123, /poll/abc, etc.
+        - sourceURL: https://example.com/poll
+          statusCode: 301
+          preserveQueryString: true
+          subpathMatching: true
+          localeCookie: locale
+          defaultTarget: https://example.com/en/poll-archived/
+          localeTargets:
+            de: https://example.com/de/poll-archived/
+            es: https://example.com/es/poll-archived/
+            fr: https://example.com/fr/poll-archived/
+            it: https://example.com/it/poll-archived/
 ```
 
 ## Static configuration
